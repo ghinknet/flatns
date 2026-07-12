@@ -1,3 +1,4 @@
+// Package flattener
 // supervisor.go owns the lifecycle of all flatten workers. It builds one
 // provider per configured alias, spawns a worker goroutine per flatten entry,
 // and rebuilds everything on configuration reload. It is the single entry point

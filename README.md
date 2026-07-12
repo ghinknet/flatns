@@ -74,7 +74,28 @@ Copy `config.example.yaml` to `config.yaml` and edit it. Highlights:
 - `providers`: credentials keyed by an alias you choose; reused across entries.
 - `flattens`: a list of jobs, each reconciled in its own goroutine. Fields:
   `source`, `domain`, `sub_domain` (`@` = apex), `ttl`, `interval` (e.g. `30s`,
-  `5m`), `ipv6`, and an optional `instance`.
+  `5m`), `ipv6`, optional `max_records`/`max_records_total` (see below), and an
+  optional `instance`.
+
+### Limiting record count
+
+Some providers' plans cap how many values a single sub-domain may resolve to —
+DNSPod's free tier, for example, allows only a couple of records per host.
+Flattening a source with more addresses than that quota would make the provider
+reject the surplus `CreateRecord` calls. Two optional per-entry knobs bound the
+managed record set so this never happens:
+
+- `max_records`: per-type cap. At most this many A records **and** this many
+  AAAA records are kept ("V4/V6 each N"). `0` (default) means unlimited.
+- `max_records_total`: combined cap across A and AAAA ("N in total"), for
+  providers that count both types against one quota. The budget is split evenly
+  between the enabled types, and either type's unused share flows to the other
+  (IPv4 gets the odd slot). `0` (default) means unlimited.
+
+Both may be set at once; each is enforced independently. Surplus addresses are
+dropped deterministically (the resolver's sorted order is stable, so the cap
+never causes create/delete churn) and the dropped values are logged at warn
+level.
 
 ## Run
 

@@ -60,6 +60,15 @@ flattens:
     ttl: 600                    # TTL for managed records, seconds
     interval: 5m                # polling interval (e.g. 30s, 5m, 1h)
     ipv6: false                 # also manage AAAA records
+    # Record-count limits, for providers whose plan restricts how many values a
+    # sub-domain may resolve to (e.g. DNSPod's free tier). Surplus addresses are
+    # dropped deterministically (sorted order) and logged at warn level.
+    # max_records: 2            # per-type cap: at most N A records AND N AAAA
+                                #   records ("V4/V6 each N"); 0 = unlimited
+    # max_records_total: 2      # combined cap across A+AAAA ("N in total"),
+                                #   split evenly between the enabled types with
+                                #   unused share flowing to the other type;
+                                #   0 = unlimited
     # instance: "beijing"       # optional per-entry override of global instance
     # resolvers:                # optional per-entry resolver override
     #   - 9.9.9.9

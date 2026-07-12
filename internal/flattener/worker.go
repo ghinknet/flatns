@@ -88,15 +88,63 @@ func (w *Worker) reconcileOnce(ctx context.Context) {
 	}
 }
 
-// buildDesired groups resolved addresses into the desired value sets per type.
+// buildDesired groups resolved addresses into the desired value sets per type,
+// then applies the entry's record-count limits (see capType and capTotal).
 func (w *Worker) buildDesired(res resolver.Result) map[provider.RecordType][]string {
+	v4 := w.capType(provider.RecordTypeA, res.IPv4)
+	var v6 []string
+	if w.cfg.IPv6 {
+		v6 = w.capType(provider.RecordTypeAAAA, res.IPv6)
+	}
+	v4, v6 = w.capTotal(v4, v6)
+
 	desired := map[provider.RecordType][]string{
-		provider.RecordTypeA: res.IPv4,
+		provider.RecordTypeA: v4,
 	}
 	if w.cfg.IPv6 {
-		desired[provider.RecordTypeAAAA] = res.IPv6
+		desired[provider.RecordTypeAAAA] = v6
 	}
 	return desired
+}
+
+// capType enforces the per-type MaxRecords limit. The resolver returns
+// addresses sorted and de-duplicated, so keeping the first MaxRecords is
+// deterministic: the same resolved set produces the same kept set across
+// cycles, so the cap never causes create/delete churn. A limit of 0 means
+// unlimited. Dropped addresses are logged at warn level so an operator can see
+// that the provider's record quota is truncating the record set.
+func (w *Worker) capType(rt provider.RecordType, values []string) []string {
+	limit := w.cfg.MaxRecords
+	if limit <= 0 || len(values) <= limit {
+		return values
+	}
+	w.log.Warn("resolved addresses exceed max_records, dropping surplus",
+		zap.String("type", string(rt)),
+		zap.Int("resolved", len(values)),
+		zap.Int("max_records", limit),
+		zap.Strings("dropped", values[limit:]),
+	)
+	return values[:limit]
+}
+
+// capTotal enforces MaxRecordsTotal across both types together, for providers
+// whose quota counts A and AAAA records against one budget. The budget is
+// split evenly between the two types, either type's unused share flows to the
+// other, and IPv4 receives the odd slot since v4 reachability is universal.
+func (w *Worker) capTotal(v4, v6 []string) ([]string, []string) {
+	limit := w.cfg.MaxRecordsTotal
+	if limit <= 0 || len(v4)+len(v6) <= limit {
+		return v4, v6
+	}
+	keep6 := min(len(v6), limit-min(len(v4), (limit+1)/2))
+	keep4 := min(len(v4), limit-keep6)
+	w.log.Warn("resolved addresses exceed max_records_total, dropping surplus",
+		zap.Int("resolved", len(v4)+len(v6)),
+		zap.Int("max_records_total", limit),
+		zap.Strings("dropped_v4", v4[keep4:]),
+		zap.Strings("dropped_v6", v6[keep6:]),
+	)
+	return v4[:keep4], v6[:keep6]
 }
 
 // reconcileType brings the provider's managed records of a single type into

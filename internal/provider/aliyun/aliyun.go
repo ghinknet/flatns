@@ -42,12 +42,12 @@ func newFromConfig(cfg provider.Config) (provider.Provider, error) {
 	}
 
 	openapiCfg := &openapi.Config{
-		AccessKeyId:     dara.String(cfg.SecretID),
-		AccessKeySecret: dara.String(cfg.SecretKey),
-		Endpoint:        dara.String(endpoint),
+		AccessKeyId:     new(cfg.SecretID),
+		AccessKeySecret: new(cfg.SecretKey),
+		Endpoint:        new(endpoint),
 	}
 	if cfg.Region != "" {
-		openapiCfg.RegionId = dara.String(cfg.Region)
+		openapiCfg.RegionId = new(cfg.Region)
 	}
 
 	client, err := alidns.NewClient(openapiCfg)
@@ -75,10 +75,10 @@ func (p *aliyunProvider) ListRecords(ctx context.Context, domain, subDomain stri
 			return nil, err
 		}
 		req := &alidns.DescribeDomainRecordsRequest{
-			DomainName: dara.String(domain),
-			RRKeyWord:  dara.String(subDomain),
-			PageNumber: dara.Int64(pageNumber),
-			PageSize:   dara.Int64(pageSize),
+			DomainName: new(domain),
+			RRKeyWord:  new(subDomain),
+			PageNumber: new(pageNumber),
+			PageSize:   new(pageSize),
 		}
 
 		resp, err := p.client.DescribeDomainRecordsWithOptions(req, runtimeOptions())
@@ -126,11 +126,11 @@ func (p *aliyunProvider) CreateRecord(ctx context.Context, rec provider.Record) 
 		return provider.Record{}, err
 	}
 	req := &alidns.AddDomainRecordRequest{
-		DomainName: dara.String(rec.Domain),
-		RR:         dara.String(rec.SubDomain),
-		Type:       dara.String(string(rec.Type)),
-		Value:      dara.String(rec.Value),
-		TTL:        dara.Int64(int64(rec.TTL)),
+		DomainName: new(rec.Domain),
+		RR:         new(rec.SubDomain),
+		Type:       new(string(rec.Type)),
+		Value:      new(rec.Value),
+		TTL:        new(int64(rec.TTL)),
 	}
 
 	resp, err := p.client.AddDomainRecordWithOptions(req, runtimeOptions())
@@ -154,11 +154,11 @@ func (p *aliyunProvider) UpdateRecord(ctx context.Context, rec provider.Record) 
 		return err
 	}
 	req := &alidns.UpdateDomainRecordRequest{
-		RecordId: dara.String(rec.ID),
-		RR:       dara.String(rec.SubDomain),
-		Type:     dara.String(string(rec.Type)),
-		Value:    dara.String(rec.Value),
-		TTL:      dara.Int64(int64(rec.TTL)),
+		RecordId: new(rec.ID),
+		RR:       new(rec.SubDomain),
+		Type:     new(string(rec.Type)),
+		Value:    new(rec.Value),
+		TTL:      new(int64(rec.TTL)),
 	}
 
 	if _, err := p.client.UpdateDomainRecordWithOptions(req, runtimeOptions()); err != nil {
@@ -178,7 +178,7 @@ func (p *aliyunProvider) DeleteRecord(ctx context.Context, _ string, id string) 
 		return err
 	}
 	req := &alidns.DeleteDomainRecordRequest{
-		RecordId: dara.String(id),
+		RecordId: new(id),
 	}
 	if _, err := p.client.DeleteDomainRecordWithOptions(req, runtimeOptions()); err != nil {
 		return fmt.Errorf("aliyun: delete record: %w", err)
@@ -189,8 +189,8 @@ func (p *aliyunProvider) DeleteRecord(ctx context.Context, _ string, id string) 
 // setRemark applies a remark to an existing record via the dedicated AliDNS API.
 func (p *aliyunProvider) setRemark(recordID, remark string) error {
 	req := &alidns.UpdateDomainRecordRemarkRequest{
-		RecordId: dara.String(recordID),
-		Remark:   dara.String(remark),
+		RecordId: new(recordID),
+		Remark:   new(remark),
 	}
 	if _, err := p.client.UpdateDomainRecordRemarkWithOptions(req, runtimeOptions()); err != nil {
 		return fmt.Errorf("aliyun: set remark: %w", err)
@@ -202,8 +202,8 @@ func (p *aliyunProvider) setRemark(recordID, remark string) error {
 // hung request cannot stall a worker indefinitely.
 func runtimeOptions() *dara.RuntimeOptions {
 	return &dara.RuntimeOptions{
-		ConnectTimeout: dara.Int(5000),
-		ReadTimeout:    dara.Int(10000),
+		ConnectTimeout: new(5000),
+		ReadTimeout:    new(10000),
 	}
 }
 

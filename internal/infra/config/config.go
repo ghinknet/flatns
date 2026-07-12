@@ -107,6 +107,20 @@ type FlattenConfig struct {
 	Interval time.Duration `mapstructure:"interval"`
 	// IPv6 enables management of AAAA records in addition to A records.
 	IPv6 bool `mapstructure:"ipv6"`
+	// MaxRecords caps how many managed records are kept per record type (A and
+	// AAAA are limited independently). Some providers' free tiers restrict the
+	// number of values a single sub-domain may resolve to (e.g. DNSPod allows
+	// only a couple per type); flattening a source with more addresses than that
+	// would otherwise make the provider reject the surplus CreateRecord calls.
+	// When the source resolves to more addresses than this limit, the first
+	// MaxRecords (sorted) are kept and the rest are dropped. 0 means unlimited.
+	MaxRecords int `mapstructure:"max_records"`
+	// MaxRecordsTotal caps the combined number of managed records across both
+	// types, for providers whose quota counts A and AAAA together. When the cap
+	// bites, the budget is split evenly between the enabled types and either
+	// type's unused share flows to the other. 0 means unlimited. Both limits may
+	// be set; each is enforced independently.
+	MaxRecordsTotal int `mapstructure:"max_records_total"`
 	// Resolvers overrides the global Resolvers list for this entry only.
 	Resolvers []string `mapstructure:"resolvers"`
 }
@@ -172,6 +186,12 @@ func (c *Config) Validate() error {
 		if f.Interval <= 0 {
 			f.Interval = defaultInterval
 		}
+		if f.MaxRecords < 0 {
+			return fmt.Errorf("config: flatten %q: max_records must not be negative", f.Name)
+		}
+		if f.MaxRecordsTotal < 0 {
+			return fmt.Errorf("config: flatten %q: max_records_total must not be negative", f.Name)
+		}
 		if err := validateResolvers(f.Resolvers); err != nil {
 			return fmt.Errorf("config: flatten %q resolvers: %w", f.Name, err)
 		}
@@ -232,11 +252,6 @@ var (
 	signalStopChan chan struct{}
 )
 
-// Debug is a convenience snapshot of Log.Debug, refreshed on every successful
-// load. It lets early bootstrap code (e.g. the logger) read the level without
-// taking the config lock.
-var Debug bool
-
 // load reads and validates config.yaml, returning the parsed Config. It does
 // not touch the singleton; callers decide whether to publish the result.
 func load() (*Config, error) {
@@ -262,7 +277,6 @@ func load() (*Config, error) {
 func publish(cfg *Config) {
 	mu.Lock()
 	current = cfg
-	Debug = cfg.Log.Debug
 	mu.Unlock()
 }
 
