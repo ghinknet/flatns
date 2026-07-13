@@ -1,7 +1,11 @@
 package flattener
 
 import (
+	"context"
+	"errors"
 	"reflect"
+	"slices"
+	"strconv"
 	"testing"
 
 	"flatns/internal/infra/config"
@@ -104,6 +108,199 @@ func TestBuildDesiredLimits(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got[provider.RecordTypeAAAA], tt.wantV6) {
 				t.Errorf("AAAA records = %v, want %v", got[provider.RecordTypeAAAA], tt.wantV6)
+			}
+		})
+	}
+}
+
+// fakeProvider is an in-memory Provider that counts mutations and tracks the
+// peak number of concurrently existing records, so tests can assert that
+// reconciliation never needs the old and new record sets to coexist (which is
+// what trips per-subdomain record quotas like DNSPod's SubdomainRollLimit).
+type fakeProvider struct {
+	records map[string]provider.Record // id -> record
+	nextID  int
+	peak    int
+
+	creates, updates, deletes int
+	failUpdate                bool
+}
+
+func newFakeProvider(existing ...provider.Record) *fakeProvider {
+	f := &fakeProvider{records: make(map[string]provider.Record)}
+	for _, rec := range existing {
+		f.nextID++
+		rec.ID = strconv.Itoa(f.nextID)
+		f.records[rec.ID] = rec
+	}
+	f.peak = len(f.records)
+	return f
+}
+
+func (f *fakeProvider) Name() string { return "fake" }
+
+func (f *fakeProvider) ListRecords(context.Context, string, string, []provider.RecordType) ([]provider.Record, error) {
+	var out []provider.Record
+	for _, rec := range f.records {
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (f *fakeProvider) CreateRecord(_ context.Context, rec provider.Record) (provider.Record, error) {
+	f.creates++
+	f.nextID++
+	rec.ID = strconv.Itoa(f.nextID)
+	f.records[rec.ID] = rec
+	f.peak = max(f.peak, len(f.records))
+	return rec, nil
+}
+
+func (f *fakeProvider) UpdateRecord(_ context.Context, rec provider.Record) error {
+	f.updates++
+	if f.failUpdate {
+		return errors.New("update refused")
+	}
+	if _, ok := f.records[rec.ID]; !ok {
+		return errors.New("no such record")
+	}
+	f.records[rec.ID] = rec
+	return nil
+}
+
+func (f *fakeProvider) DeleteRecord(_ context.Context, _ string, id string) error {
+	f.deletes++
+	delete(f.records, id)
+	return nil
+}
+
+// values returns the sorted record values currently stored.
+func (f *fakeProvider) values() []string {
+	var out []string
+	for _, rec := range f.records {
+		out = append(out, rec.Value)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func TestReconcileType(t *testing.T) {
+	const (
+		domain = "example.com"
+		source = "src.example.com"
+		ttl    = 600
+	)
+	marker := provider.BuildManagedRemark(provider.ManagedRemark{Source: source})
+	managedRec := func(value string, recTTL uint64) provider.Record {
+		return provider.Record{
+			Domain: domain, SubDomain: "@", Type: provider.RecordTypeA,
+			Value: value, TTL: recTTL, Remark: marker,
+		}
+	}
+
+	tests := []struct {
+		name       string
+		existing   []provider.Record
+		desired    []string
+		failUpdate bool
+
+		wantValues  []string
+		wantCreates int
+		wantUpdates int
+		wantDeletes int
+		wantPeak    int
+	}{
+		{
+			name:        "value change repoints records in place",
+			existing:    []provider.Record{managedRec("1.1.1.1", ttl), managedRec("2.2.2.2", ttl)},
+			desired:     []string{"3.3.3.3", "4.4.4.4"},
+			wantValues:  []string{"3.3.3.3", "4.4.4.4"},
+			wantUpdates: 2,
+			wantPeak:    2,
+		},
+		{
+			name:        "growth creates only the surplus after updates",
+			existing:    []provider.Record{managedRec("1.1.1.1", ttl)},
+			desired:     []string{"3.3.3.3", "4.4.4.4"},
+			wantValues:  []string{"3.3.3.3", "4.4.4.4"},
+			wantUpdates: 1,
+			wantCreates: 1,
+			wantPeak:    2,
+		},
+		{
+			name:        "shrink deletes leftover stale records",
+			existing:    []provider.Record{managedRec("1.1.1.1", ttl), managedRec("2.2.2.2", ttl)},
+			desired:     []string{"3.3.3.3"},
+			wantValues:  []string{"3.3.3.3"},
+			wantUpdates: 1,
+			wantDeletes: 1,
+			wantPeak:    2,
+		},
+		{
+			name:       "matching state is a no-op",
+			existing:   []provider.Record{managedRec("1.1.1.1", ttl)},
+			desired:    []string{"1.1.1.1"},
+			wantValues: []string{"1.1.1.1"},
+			wantPeak:   1,
+		},
+		{
+			name: "foreign records are never touched",
+			existing: []provider.Record{
+				managedRec("1.1.1.1", ttl),
+				{Domain: domain, SubDomain: "@", Type: provider.RecordTypeA, Value: "9.9.9.9", TTL: ttl},
+				{Domain: domain, SubDomain: "@", Type: provider.RecordTypeA, Value: "8.8.8.8", TTL: ttl,
+					Remark: provider.BuildManagedRemark(provider.ManagedRemark{Instance: "other", Source: source})},
+			},
+			desired:     []string{"2.2.2.2"},
+			wantValues:  []string{"2.2.2.2", "8.8.8.8", "9.9.9.9"},
+			wantUpdates: 1,
+			wantPeak:    3,
+		},
+		{
+			name:        "failed update keeps the stale record serving",
+			existing:    []provider.Record{managedRec("1.1.1.1", ttl)},
+			desired:     []string{"2.2.2.2"},
+			failUpdate:  true,
+			wantValues:  []string{"1.1.1.1"},
+			wantUpdates: 1,
+			wantPeak:    1,
+		},
+		{
+			name:        "kept value syncs ttl in place",
+			existing:    []provider.Record{managedRec("1.1.1.1", 300)},
+			desired:     []string{"1.1.1.1"},
+			wantValues:  []string{"1.1.1.1"},
+			wantUpdates: 1,
+			wantPeak:    1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeProvider(tt.existing...)
+			fake.failUpdate = tt.failUpdate
+			w := &Worker{
+				cfg: config.FlattenConfig{
+					Domain: domain, SubDomain: "@", Source: source, TTL: ttl,
+				},
+				provider: fake,
+				log:      zap.NewNop(),
+			}
+
+			if err := w.reconcileType(context.Background(), provider.RecordTypeA, tt.desired); err != nil {
+				t.Fatalf("reconcileType() error = %v", err)
+			}
+
+			if got := fake.values(); !reflect.DeepEqual(got, tt.wantValues) {
+				t.Errorf("record values = %v, want %v", got, tt.wantValues)
+			}
+			if fake.creates != tt.wantCreates || fake.updates != tt.wantUpdates || fake.deletes != tt.wantDeletes {
+				t.Errorf("creates/updates/deletes = %d/%d/%d, want %d/%d/%d",
+					fake.creates, fake.updates, fake.deletes,
+					tt.wantCreates, tt.wantUpdates, tt.wantDeletes)
+			}
+			if fake.peak > tt.wantPeak {
+				t.Errorf("peak concurrent records = %d, want <= %d", fake.peak, tt.wantPeak)
 			}
 		})
 	}

@@ -4,7 +4,9 @@
 package flattener
 
 import (
+	"cmp"
 	"context"
+	"slices"
 	"time"
 
 	"flatns/internal/infra/config"
@@ -150,6 +152,14 @@ func (w *Worker) capTotal(v4, v6 []string) ([]string, []string) {
 // reconcileType brings the provider's managed records of a single type into
 // agreement with the desired value set. It only ever touches records carrying
 // this entry's managed marker, leaving user records untouched.
+//
+// Value changes are applied by repointing stale records in place via
+// UpdateRecord rather than create-then-delete. Providers cap how many records
+// may coexist on one subdomain (e.g. DNSPod's LimitExceeded.SubdomainRollLimit
+// on plans whose quota equals max_records), so creating the new set while the
+// old one still exists can be rejected outright — and deleting the old set
+// first would leave the name unresolvable until the creates land. In-place
+// updates keep the record count constant, so neither failure mode can occur.
 func (w *Worker) reconcileType(ctx context.Context, rt provider.RecordType, desiredValues []string) error {
 	existing, err := w.provider.ListRecords(ctx, w.cfg.Domain, w.cfg.SubDomain, []provider.RecordType{rt})
 	if err != nil {
@@ -177,11 +187,46 @@ func (w *Worker) reconcileType(ctx context.Context, rt provider.RecordType, desi
 		desiredSet[v] = struct{}{}
 	}
 
-	// Create records for desired values that are not yet present.
+	// Desired values not present yet, in the resolver's deterministic order.
+	var missing []string
 	for _, value := range desiredValues {
-		if _, ok := managed[value]; ok {
+		if _, ok := managed[value]; !ok {
+			missing = append(missing, value)
+		}
+	}
+
+	// Managed records whose value is no longer desired. Sorted by value so the
+	// stale/missing pairing is stable across cycles (managed is a map), which
+	// lets a failed update retry the same pair instead of reshuffling.
+	var stale []provider.Record
+	for value, rec := range managed {
+		if _, ok := desiredSet[value]; !ok {
+			stale = append(stale, rec)
+		}
+	}
+	slices.SortFunc(stale, func(a, b provider.Record) int {
+		return cmp.Compare(a.Value, b.Value)
+	})
+
+	// Repoint stale records at missing values in place. On failure the stale
+	// record is left serving (and the value left uncreated) for the next cycle,
+	// so a rejected update never shrinks the live record set.
+	for len(missing) > 0 && len(stale) > 0 {
+		rec, value := stale[0], missing[0]
+		stale, missing = stale[1:], missing[1:]
+		oldValue := rec.Value
+		rec.Value = value
+		rec.TTL = w.cfg.TTL
+		rec.Remark = marker
+		if err := w.provider.UpdateRecord(ctx, rec); err != nil {
+			w.log.Error("update record failed", zap.String("type", string(rt)), zap.String("old_value", oldValue), zap.String("value", value), zap.Error(err))
 			continue
 		}
+		w.log.Info("updated record", zap.String("type", string(rt)), zap.String("old_value", oldValue), zap.String("value", value))
+	}
+
+	// Create records for desired values beyond what updates could absorb.
+	for _, value := range missing {
 		rec := provider.Record{
 			Domain:    w.cfg.Domain,
 			SubDomain: w.cfg.SubDomain,
@@ -197,26 +242,27 @@ func (w *Worker) reconcileType(ctx context.Context, rt provider.RecordType, desi
 		w.log.Info("created record", zap.String("type", string(rt)), zap.String("value", value))
 	}
 
-	// Delete managed records whose value is no longer desired.
-	for value, rec := range managed {
-		if _, ok := desiredSet[value]; ok {
-			// Value still desired; ensure TTL is in sync.
-			if rec.TTL != w.cfg.TTL {
-				rec.TTL = w.cfg.TTL
-				rec.Remark = marker
-				if err := w.provider.UpdateRecord(ctx, rec); err != nil {
-					w.log.Error("update record TTL failed", zap.String("type", string(rt)), zap.String("value", value), zap.Error(err))
-					continue
-				}
-				w.log.Info("updated record ttl", zap.String("type", string(rt)), zap.String("value", value), zap.Uint64("ttl", w.cfg.TTL))
-			}
-			continue
-		}
+	// Delete leftover stale records that no missing value claimed.
+	for _, rec := range stale {
 		if err := w.provider.DeleteRecord(ctx, w.cfg.Domain, rec.ID); err != nil {
-			w.log.Error("delete record failed", zap.String("type", string(rt)), zap.String("value", value), zap.Error(err))
+			w.log.Error("delete record failed", zap.String("type", string(rt)), zap.String("value", rec.Value), zap.Error(err))
 			continue
 		}
-		w.log.Info("deleted stale record", zap.String("type", string(rt)), zap.String("value", value))
+		w.log.Info("deleted stale record", zap.String("type", string(rt)), zap.String("value", rec.Value))
+	}
+
+	// Records keeping their value only need the TTL held in sync.
+	for value, rec := range managed {
+		if _, ok := desiredSet[value]; !ok || rec.TTL == w.cfg.TTL {
+			continue
+		}
+		rec.TTL = w.cfg.TTL
+		rec.Remark = marker
+		if err := w.provider.UpdateRecord(ctx, rec); err != nil {
+			w.log.Error("update record TTL failed", zap.String("type", string(rt)), zap.String("value", value), zap.Error(err))
+			continue
+		}
+		w.log.Info("updated record ttl", zap.String("type", string(rt)), zap.String("value", value), zap.Uint64("ttl", w.cfg.TTL))
 	}
 
 	return nil
