@@ -74,8 +74,13 @@ Copy `config.example.yaml` to `config.yaml` and edit it. Highlights:
 - `providers`: credentials keyed by an alias you choose; reused across entries.
 - `flattens`: a list of jobs, each reconciled in its own goroutine. Fields:
   `source`, `domain`, `sub_domain` (`@` = apex), `ttl`, `interval` (e.g. `30s`,
-  `5m`), `ipv6`, optional `max_records`/`max_records_total` (see below), and an
+  `5m`), `ipv4` and `ipv6` (independent address-family switches), optional
+  `max_records`/`max_records_total` (see below), and an
   optional `instance`.
+
+`ipv4` controls A records and `ipv6` controls AAAA records. They default to
+`true` and `false`, respectively, so older configurations keep their previous
+behavior. At least one family must be enabled.
 
 ### Limiting record count
 

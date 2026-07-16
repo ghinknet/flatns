@@ -71,19 +71,24 @@ func ensurePort(server string) string {
 // Resolve returns the terminal A/AAAA records reachable from name. When the
 // Resolver has custom servers it follows the CNAME chain explicitly; otherwise
 // it delegates to the system resolver which performs recursion for us.
-func (r *Resolver) Resolve(ctx context.Context, name string, wantIPv6 bool) (Result, error) {
+func (r *Resolver) Resolve(ctx context.Context, name string, wantIPv4, wantIPv6 bool) (Result, error) {
 	if len(r.servers) == 0 {
-		return r.resolveSystem(ctx, name, wantIPv6)
+		return r.resolveSystem(ctx, name, wantIPv4, wantIPv6)
 	}
-	return r.resolveCustom(ctx, name, wantIPv6)
+	return r.resolveCustom(ctx, name, wantIPv4, wantIPv6)
 }
 
 // resolveSystem uses Go's built-in resolver, which already follows CNAMEs.
-func (r *Resolver) resolveSystem(ctx context.Context, name string, wantIPv6 bool) (Result, error) {
+func (r *Resolver) resolveSystem(ctx context.Context, name string, wantIPv4, wantIPv6 bool) (Result, error) {
 	var resolver net.Resolver
 	network := "ip4"
-	if wantIPv6 {
+	if wantIPv6 && !wantIPv4 {
+		network = "ip6"
+	} else if wantIPv6 {
 		network = "ip"
+	}
+	if !wantIPv4 && !wantIPv6 {
+		return Result{}, fmt.Errorf("resolver: no address family enabled")
 	}
 	ips, err := resolver.LookupIP(ctx, network, name)
 	if err != nil {
@@ -91,7 +96,7 @@ func (r *Resolver) resolveSystem(ctx context.Context, name string, wantIPv6 bool
 	}
 	var res Result
 	for _, ip := range ips {
-		if v4 := ip.To4(); v4 != nil {
+		if v4 := ip.To4(); v4 != nil && wantIPv4 {
 			res.IPv4 = append(res.IPv4, v4.String())
 		} else if wantIPv6 {
 			res.IPv6 = append(res.IPv6, ip.String())
@@ -106,14 +111,15 @@ func (r *Resolver) resolveSystem(ctx context.Context, name string, wantIPv6 bool
 
 // resolveCustom performs explicit CNAME chain following against the configured
 // recursive servers and gathers the resulting address records.
-func (r *Resolver) resolveCustom(ctx context.Context, name string, wantIPv6 bool) (Result, error) {
+func (r *Resolver) resolveCustom(ctx context.Context, name string, wantIPv4, wantIPv6 bool) (Result, error) {
 	var res Result
-
-	v4, err := r.queryWithChain(ctx, name, dns.TypeA)
-	if err != nil {
-		return Result{}, err
+	if wantIPv4 {
+		v4, err := r.queryWithChain(ctx, name, dns.TypeA)
+		if err != nil {
+			return Result{}, err
+		}
+		res.IPv4 = v4
 	}
-	res.IPv4 = v4
 
 	if wantIPv6 {
 		v6, err := r.queryWithChain(ctx, name, dns.TypeAAAA)

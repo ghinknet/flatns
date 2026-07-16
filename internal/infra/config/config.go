@@ -105,7 +105,10 @@ type FlattenConfig struct {
 	TTL uint64 `mapstructure:"ttl"`
 	// Interval is the polling interval for this entry.
 	Interval time.Duration `mapstructure:"interval"`
-	// IPv6 enables management of AAAA records in addition to A records.
+	// IPv4 controls management of A records. A nil value means enabled for
+	// backwards compatibility with configurations written before this option.
+	IPv4 *bool `mapstructure:"ipv4"`
+	// IPv6 controls management of AAAA records.
 	IPv6 bool `mapstructure:"ipv6"`
 	// MaxRecords caps how many managed records are kept per record type (A and
 	// AAAA are limited independently). Some providers' free tiers restrict the
@@ -185,6 +188,13 @@ func (c *Config) Validate() error {
 		}
 		if f.Interval <= 0 {
 			f.Interval = defaultInterval
+		}
+		if f.IPv4 == nil {
+			enabled := true
+			f.IPv4 = &enabled
+		}
+		if !*f.IPv4 && !f.IPv6 {
+			return fmt.Errorf("config: flatten %q: at least one of ipv4 or ipv6 must be enabled", f.Name)
 		}
 		if f.MaxRecords < 0 {
 			return fmt.Errorf("config: flatten %q: max_records must not be negative", f.Name)

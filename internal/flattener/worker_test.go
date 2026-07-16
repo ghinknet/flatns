@@ -18,13 +18,27 @@ import (
 // newTestWorker builds a Worker with the given limits and a no-op logger, so
 // buildDesired can be exercised without a live provider or global logger.
 func newTestWorker(ipv6 bool, maxRecords, maxTotal int) *Worker {
+	ipv4 := true
 	return &Worker{
 		cfg: config.FlattenConfig{
+			IPv4:            &ipv4,
 			IPv6:            ipv6,
 			MaxRecords:      maxRecords,
 			MaxRecordsTotal: maxTotal,
 		},
 		log: zap.NewNop(),
+	}
+}
+
+func TestBuildDesiredIPv4Disabled(t *testing.T) {
+	ipv4 := false
+	w := &Worker{cfg: config.FlattenConfig{IPv4: &ipv4, IPv6: true}, log: zap.NewNop()}
+	got := w.buildDesired(resolver.Result{IPv4: []string{"1.1.1.1"}, IPv6: []string{"::1"}})
+	if len(got[provider.RecordTypeA]) != 0 {
+		t.Fatalf("A records should be disabled: %v", got)
+	}
+	if !reflect.DeepEqual(got[provider.RecordTypeAAAA], []string{"::1"}) {
+		t.Fatalf("AAAA records = %v", got[provider.RecordTypeAAAA])
 	}
 }
 

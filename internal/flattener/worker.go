@@ -48,7 +48,7 @@ func (w *Worker) Run(ctx context.Context) {
 	w.log.Info("worker started",
 		zap.String("source", w.cfg.Source),
 		zap.Duration("interval", w.cfg.Interval),
-		zap.Bool("ipv6", w.cfg.IPv6),
+		zap.Bool("ipv4", w.ipv4Enabled()), zap.Bool("ipv6", w.cfg.IPv6),
 	)
 
 	// Run once immediately so the records are correct without waiting a full
@@ -72,7 +72,7 @@ func (w *Worker) Run(ctx context.Context) {
 // reconcileOnce performs a single resolve-diff-apply cycle, logging but not
 // propagating errors so that a transient failure never kills the loop.
 func (w *Worker) reconcileOnce(ctx context.Context) {
-	resolved, err := w.resolver.Resolve(ctx, w.cfg.Source, w.cfg.IPv6)
+	resolved, err := w.resolver.Resolve(ctx, w.cfg.Source, w.ipv4Enabled(), w.cfg.IPv6)
 	if err != nil {
 		w.log.Warn("resolve failed, skipping cycle", zap.Error(err))
 		return
@@ -80,8 +80,10 @@ func (w *Worker) reconcileOnce(ctx context.Context) {
 
 	desired := w.buildDesired(resolved)
 
-	if err := w.reconcileType(ctx, provider.RecordTypeA, desired[provider.RecordTypeA]); err != nil {
-		w.log.Error("reconcile A records failed", zap.Error(err))
+	if w.ipv4Enabled() {
+		if err := w.reconcileType(ctx, provider.RecordTypeA, desired[provider.RecordTypeA]); err != nil {
+			w.log.Error("reconcile A records failed", zap.Error(err))
+		}
 	}
 	if w.cfg.IPv6 {
 		if err := w.reconcileType(ctx, provider.RecordTypeAAAA, desired[provider.RecordTypeAAAA]); err != nil {
@@ -93,7 +95,10 @@ func (w *Worker) reconcileOnce(ctx context.Context) {
 // buildDesired groups resolved addresses into the desired value sets per type,
 // then applies the entry's record-count limits (see capType and capTotal).
 func (w *Worker) buildDesired(res resolver.Result) map[provider.RecordType][]string {
-	v4 := w.capType(provider.RecordTypeA, res.IPv4)
+	var v4 []string
+	if w.ipv4Enabled() {
+		v4 = w.capType(provider.RecordTypeA, res.IPv4)
+	}
 	var v6 []string
 	if w.cfg.IPv6 {
 		v6 = w.capType(provider.RecordTypeAAAA, res.IPv6)
@@ -108,6 +113,8 @@ func (w *Worker) buildDesired(res resolver.Result) map[provider.RecordType][]str
 	}
 	return desired
 }
+
+func (w *Worker) ipv4Enabled() bool { return w.cfg.IPv4 == nil || *w.cfg.IPv4 }
 
 // capType enforces the per-type MaxRecords limit. The resolver returns
 // addresses sorted and de-duplicated, so keeping the first MaxRecords is

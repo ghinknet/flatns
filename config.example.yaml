@@ -59,7 +59,8 @@ flattens:
     sub_domain: "@"             # target host; "@" is the apex
     ttl: 600                    # TTL for managed records, seconds
     interval: 5m                # polling interval (e.g. 30s, 5m, 1h)
-    ipv6: false                 # also manage AAAA records
+    ipv4: true                  # manage A records (omitted => true)
+    ipv6: false                 # manage AAAA records
     # Record-count limits, for providers whose plan restricts how many values a
     # sub-domain may resolve to (e.g. DNSPod's free tier). Surplus addresses are
     # dropped deterministically (sorted order) and logged at warn level.
@@ -80,4 +81,5 @@ flattens:
     sub_domain: www
     ttl: 300
     interval: 2m
+    ipv4: true
     ipv6: true
