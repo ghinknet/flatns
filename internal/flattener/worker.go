@@ -178,12 +178,15 @@ func (w *Worker) reconcileType(ctx context.Context, rt provider.RecordType, desi
 		Source:   w.cfg.Source,
 	})
 
-	// Partition existing records into ones we manage (matching our instance and
-	// source marker) and everything else, which we must never modify.
+	// Partition existing records into ones managed by this instance and
+	// everything else, which we must never modify. Source is deliberately not
+	// part of ownership: when the configured source changes, records on this
+	// same domain/subdomain/type are adopted and repointed in place, then their
+	// remarks are refreshed with the new source.
 	managed := make(map[string]provider.Record) // value -> record
 	for _, rec := range existing {
 		m, ok := provider.ParseManagedRemark(rec.Remark)
-		if !ok || m.Instance != w.cfg.Instance || m.Source != w.cfg.Source {
+		if !ok || m.Instance != w.cfg.Instance {
 			continue
 		}
 		managed[rec.Value] = rec
@@ -258,18 +261,20 @@ func (w *Worker) reconcileType(ctx context.Context, rt provider.RecordType, desi
 		w.log.Info("deleted stale record", zap.String("type", string(rt)), zap.String("value", rec.Value))
 	}
 
-	// Records keeping their value only need the TTL held in sync.
+	// Records keeping their value still need the TTL and managed remark held in
+	// sync. Updating the remark is what completes an in-place source migration
+	// when the newly resolved address happens to equal the old one.
 	for value, rec := range managed {
-		if _, ok := desiredSet[value]; !ok || rec.TTL == w.cfg.TTL {
+		if _, ok := desiredSet[value]; !ok || (rec.TTL == w.cfg.TTL && rec.Remark == marker) {
 			continue
 		}
 		rec.TTL = w.cfg.TTL
 		rec.Remark = marker
 		if err := w.provider.UpdateRecord(ctx, rec); err != nil {
-			w.log.Error("update record TTL failed", zap.String("type", string(rt)), zap.String("value", value), zap.Error(err))
+			w.log.Error("update record metadata failed", zap.String("type", string(rt)), zap.String("value", value), zap.Error(err))
 			continue
 		}
-		w.log.Info("updated record ttl", zap.String("type", string(rt)), zap.String("value", value), zap.Uint64("ttl", w.cfg.TTL))
+		w.log.Info("updated record metadata", zap.String("type", string(rt)), zap.String("value", value), zap.Uint64("ttl", w.cfg.TTL))
 	}
 
 	return nil

@@ -319,3 +319,57 @@ func TestReconcileType(t *testing.T) {
 		})
 	}
 }
+
+func TestReconcileTypeAdoptsRecordsAfterSourceChange(t *testing.T) {
+	const (
+		domain    = "example.com"
+		oldSource = "old.cdn.example.com"
+		newSource = "new.cdn.example.com"
+		ttl       = 600
+	)
+
+	tests := []struct {
+		name     string
+		instance string
+		oldValue string
+		newValue string
+	}{
+		{name: "named instance repoints old source record", instance: "beijing", oldValue: "1.1.1.1", newValue: "2.2.2.2"},
+		{name: "default instance refreshes remark when value is unchanged", oldValue: "1.1.1.1", newValue: "1.1.1.1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldRecord := provider.Record{
+				Domain: domain, SubDomain: "@", Type: provider.RecordTypeA,
+				Value: tt.oldValue, TTL: ttl,
+				Remark: provider.BuildManagedRemark(provider.ManagedRemark{Instance: tt.instance, Source: oldSource}),
+			}
+			fake := newFakeProvider(oldRecord)
+			w := &Worker{
+				cfg: config.FlattenConfig{
+					Instance: tt.instance, Domain: domain, SubDomain: "@",
+					Source: newSource, TTL: ttl,
+				},
+				provider: fake,
+				log:      zap.NewNop(),
+			}
+
+			if err := w.reconcileType(context.Background(), provider.RecordTypeA, []string{tt.newValue}); err != nil {
+				t.Fatalf("reconcileType() error = %v", err)
+			}
+			if fake.creates != 0 || fake.updates != 1 || fake.deletes != 0 {
+				t.Fatalf("creates/updates/deletes = %d/%d/%d, want 0/1/0", fake.creates, fake.updates, fake.deletes)
+			}
+			if len(fake.records) != 1 {
+				t.Fatalf("record count = %d, want 1", len(fake.records))
+			}
+			wantRemark := provider.BuildManagedRemark(provider.ManagedRemark{Instance: tt.instance, Source: newSource})
+			for _, rec := range fake.records {
+				if rec.Value != tt.newValue || rec.Remark != wantRemark {
+					t.Errorf("record = value %q, remark %q; want value %q, remark %q", rec.Value, rec.Remark, tt.newValue, wantRemark)
+				}
+			}
+		})
+	}
+}

@@ -31,8 +31,9 @@ const ManagedMarker = "flatns-managed"
 // ManagedRemark identifies a record flatns maintains. Instance distinguishes
 // independent flatns deployments (e.g. per-region single-host instances that
 // each manage a different subset of IPs), so they never claim or clobber each
-// other's records even when flattening the same source. Source is the CNAME
-// being flattened. A record is "ours" only when both fields match this entry.
+// other's records. Source records which CNAME produced the current value, but
+// is metadata rather than ownership: changing source lets the same instance
+// update its existing records in place and refresh this field.
 type ManagedRemark struct {
 	// Instance is the deployment identifier. Empty means the unnamed/default
 	// instance, which keeps the legacy single-instance remark format.

@@ -22,6 +22,10 @@ Every record flatns creates is tagged with a remark of the form
 `flatns-managed:<source>` (or `flatns-managed:i=<instance>:<source>` when an
 `instance` is set). flatns **only ever touches records carrying its own
 marker**, so your manually-created records are never modified or deleted.
+Ownership is scoped by the configured `instance` (plus the target
+domain/subdomain and record type). If `source` changes, the same instance adopts
+its previously managed records, updates their values in place, and refreshes
+the remark to the new source instead of creating a second record set.
 
 ### Multi-region / multi-instance
 
